@@ -4,12 +4,22 @@ import type { RuntimeContext } from "./types.js";
 export class ApiError extends Error {
   readonly status: number;
   readonly details?: unknown;
+  readonly endpoint?: string;
+  readonly method?: string;
 
-  constructor(message: string, status: number, details?: unknown) {
+  constructor(
+    message: string,
+    status: number,
+    details?: unknown,
+    endpoint?: string,
+    method?: string,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.details = details;
+    this.endpoint = endpoint;
+    this.method = method;
   }
 }
 
@@ -18,8 +28,8 @@ export class ApiClient {
   private readonly timeoutMs: number;
   private readonly token?: string;
 
-  constructor(private readonly runtime: RuntimeContext) {
-    this.basePath = `${runtime.baseUrl}/api/admin/v1`;
+  constructor(private readonly runtime: RuntimeContext, basePath?: string) {
+    this.basePath = stripTrailingSlash(basePath ?? `${runtime.baseUrl}/api/admin/v1`);
     this.timeoutMs = runtime.timeoutMs;
     this.token = runtime.token;
   }
@@ -38,6 +48,14 @@ export class ApiClient {
 
   async delete<T>(endpoint: string, query?: Record<string, unknown>): Promise<T> {
     return this.request<T>("DELETE", endpoint, { query });
+  }
+
+  async deleteWithBody<T>(
+    endpoint: string,
+    body?: unknown,
+    query?: Record<string, unknown>,
+  ): Promise<T> {
+    return this.request<T>("DELETE", endpoint, { body, query });
   }
 
   private async request<T>(
@@ -67,6 +85,8 @@ export class ApiClient {
       headers["Content-Type"] = "application/json";
     }
 
+    let responseStatus: number | null = null;
+    let logged = false;
     try {
       const response = await fetch(url, {
         method,
@@ -77,12 +97,19 @@ export class ApiClient {
 
       const text = await response.text();
       const payload = tryParseJson(text);
+      responseStatus = response.status;
+
+      if (method !== "GET") {
+        logged = await logAudit(this.runtime, method, endpoint, response.status);
+      }
 
       if (!response.ok) {
         throw new ApiError(
           `HTTP ${response.status} ${response.statusText}`,
           response.status,
           payload ?? text,
+          endpoint,
+          method,
         );
       }
 
@@ -90,6 +117,9 @@ export class ApiClient {
     } catch (error) {
       if (error instanceof ApiError) {
         throw error;
+      }
+      if (method !== "GET" && !logged) {
+        await logAudit(this.runtime, method, endpoint, responseStatus ?? "network_error");
       }
       if (error instanceof Error && error.name === "AbortError") {
         throw new Error(`Request timeout after ${this.timeoutMs}ms`);
@@ -132,5 +162,34 @@ function tryParseJson(text: string): unknown {
     return JSON.parse(text);
   } catch {
     return text;
+  }
+}
+
+function stripTrailingSlash(value: string): string {
+  return value.replace(/\/+$/g, "");
+}
+
+async function logAudit(
+  runtime: RuntimeContext,
+  method: string,
+  endpoint: string,
+  responseStatus: number | string,
+): Promise<boolean> {
+  try {
+    const { getAuditContext, extractAdminIdFromToken, writeAuditLog } = await import(
+      "../utils/audit.js"
+    );
+    const context = getAuditContext();
+    const adminId = extractAdminIdFromToken(runtime.token);
+    await writeAuditLog({
+      timestamp: new Date().toISOString(),
+      command: context.command ?? "unknown",
+      args: context.args ?? [],
+      adminId,
+      response_status: responseStatus,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }

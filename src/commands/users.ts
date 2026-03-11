@@ -1,9 +1,17 @@
 import type { Command } from "commander";
 import ora from "ora";
+import pc from "picocolors";
+import Table from "cli-table3";
 import { createRuntimeContext } from "../core/config.js";
 import { ApiClient } from "../core/http.js";
 import { formatDate, printJson, printSuccess, printTable, printWarn } from "../core/output.js";
 import type { GlobalOptions } from "../core/types.js";
+import { confirmPrompt } from "../utils/confirm.js";
+import {
+  sendLegacyNotificationToAll,
+  sendLegacyNotificationToMany,
+  sendLegacyNotificationToUser,
+} from "./notify.js";
 
 type UserListItem = {
   userId: string;
@@ -182,40 +190,51 @@ export function registerUsersCommands(program: Command): void {
     .action(async (id: string, command: Command) => {
       const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
       const api = new ApiClient(runtime);
+      const profile = await api.get<Record<string, unknown>>(`/users/${id}`);
+      const username = extractUsername(profile) ?? id;
+      const confirmed = await confirmPrompt(`Unban user ${username}? [y/N]`);
+      if (!confirmed) {
+        printWarn("Unban cancelled.");
+        return;
+      }
       const spinner = ora(`Unbanning user ${id}...`).start();
-      const result = await api.delete<unknown>(`/users/${id}/ban`);
+      const result = await api.post<unknown>(`/admin/users/${id}/unban`);
       spinner.succeed("User unbanned.");
-      printJson(result);
+      if (runtime.json) {
+        printJson(result);
+        return;
+      }
+      printSuccess(`User ${username} unbanned.`);
     });
 
   users
     .command("mute <id>")
     .description("Mute user for N minutes")
-    .requiredOption("--reason <text>")
-    .requiredOption("--minutes <n>")
-    .option("--level <level>", "mute level", "standard")
+    .requiredOption("--duration <minutes>")
     .action(
       async (
         id: string,
-        options: { reason: string; minutes: string; level: string },
+        options: { duration: string },
         command: Command,
       ) => {
         const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
         const api = new ApiClient(runtime);
-        const minutes = Number.parseInt(options.minutes, 10);
+        const minutes = Number.parseInt(options.duration, 10);
         if (!Number.isFinite(minutes) || minutes <= 0) {
-          printWarn("minutes must be a positive integer.");
+          printWarn("duration must be a positive integer.");
           return;
         }
 
         const spinner = ora(`Muting user ${id}...`).start();
-        const result = await api.patch<unknown>(`/users/${id}/mute`, {
-          reason: options.reason,
-          durationMinutes: minutes,
-          level: options.level,
+        const result = await api.post<unknown>(`/admin/users/${id}/mute`, {
+          duration: minutes,
         });
         spinner.succeed("User muted.");
-        printJson(result);
+        if (runtime.json) {
+          printJson(result);
+          return;
+        }
+        printSuccess(`User ${id} muted for ${minutes} minutes.`);
       },
     );
 
@@ -227,11 +246,105 @@ export function registerUsersCommands(program: Command): void {
       const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
       const api = new ApiClient(runtime);
       const spinner = ora(`Warning user ${id}...`).start();
-      const result = await api.patch<unknown>(`/users/${id}/warn`, {
+      const result = await api.post<Record<string, unknown>>(`/admin/users/${id}/warn`, {
         reason: options.reason,
       });
       spinner.succeed("User warned.");
-      printJson(result);
+      if (runtime.json) {
+        printJson(result);
+        return;
+      }
+      const warnCount = readNumber(result, "warnCount", "warnings", "currentWarnings");
+      const warnLimit = readNumber(result, "warnLimit", "maxWarnings", "limit");
+      if (warnCount !== null) {
+        const suffix = warnLimit !== null ? `${warnCount}/${warnLimit}` : `${warnCount}`;
+        printSuccess(`Warnings: ${suffix}`);
+        return;
+      }
+      printSuccess("Warning issued.");
+    });
+
+  users
+    .command("reset-password <id>")
+    .description("Send password reset link to user")
+    .action(async (id: string, command: Command) => {
+      const confirmed = await confirmPrompt("Send password reset link? [y/N]");
+      if (!confirmed) {
+        printWarn("Password reset cancelled.");
+        return;
+      }
+      const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
+      const api = new ApiClient(runtime);
+      const spinner = ora(`Requesting password reset for ${id}...`).start();
+      const result = await api.post<unknown>(`/admin/users/${id}/reset-password`);
+      spinner.succeed("Password reset requested.");
+      if (runtime.json) {
+        printJson(result);
+        return;
+      }
+      printSuccess("Password reset link sent to user's email");
+    });
+
+  users
+    .command("delete <id>")
+    .description("Delete user")
+    .option("--confirm", "confirm deletion")
+    .action(async (id: string, options: { confirm?: boolean }, command: Command) => {
+      if (!options.confirm) {
+        throw new Error("Pass --confirm to delete");
+      }
+      const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
+      const api = new ApiClient(runtime);
+      const profile = await api.get<Record<string, unknown>>(`/users/${id}`);
+      renderDeleteWarning(profile);
+      const spinner = ora(`Deleting user ${id}...`).start();
+      const result = await api.delete<unknown>(`/admin/users/${id}`);
+      spinner.succeed("User deleted.");
+      if (runtime.json) {
+        printJson(result);
+        return;
+      }
+      console.log(pc.red("User deleted."));
+      printSuccess(`User ${id} deleted.`);
+    });
+
+  users
+    .command("history <id>")
+    .description("Get user moderation history")
+    .option("--take <n>", "rows limit", "25")
+    .action(async (id: string, options: { take: string }, command: Command) => {
+      const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
+      const api = new ApiClient(runtime);
+      const spinner = ora(`Loading user history for ${id}...`).start();
+      const result = await api.get<Array<Record<string, unknown>>>(`/admin/users/${id}/history`, {
+        take: options.take,
+      });
+      spinner.succeed(`Loaded ${result.length} entries.`);
+
+      if (runtime.json) {
+        printJson(result);
+        return;
+      }
+
+      if (!result.length) {
+        printWarn("No results found");
+        return;
+      }
+
+      printTable(
+        result.map((entry) => ({
+          date: formatDate(entry.date ?? entry.createdAt ?? entry.timestamp),
+          action: entry.action ?? "-",
+          reason: entry.reason ?? entry.note ?? "-",
+          admin: entry.admin ?? entry.adminId ?? "-",
+        })),
+        [
+          { key: "date", title: "Date" },
+          { key: "action", title: "Action" },
+          { key: "reason", title: "Reason" },
+          { key: "admin", title: "Admin" },
+        ],
+      );
     });
 
   users
@@ -255,17 +368,12 @@ export function registerUsersCommands(program: Command): void {
         command: Command,
       ) => {
         const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
-        const api = new ApiClient(runtime);
-        const spinner = ora(`Sending notification to ${id}...`).start();
-        const result = await api.post<unknown>(`/users/${id}/notify`, {
-          title: options.title,
-          message: options.message,
-          kind: options.kind,
-          channelId: options.channel || null,
-          metadata: parseJsonOption(options.metadata),
-        });
-        spinner.succeed("Notification sent.");
-        printJson(result);
+        const result = await sendLegacyNotificationToUser(runtime, id, options);
+        if (runtime.json) {
+          printJson(result);
+          return;
+        }
+        printSuccess(`Notification sent to ${id}.`);
       },
     );
 
@@ -290,27 +398,13 @@ export function registerUsersCommands(program: Command): void {
         },
         command: Command,
       ) => {
-        const userIds = options.ids
-          .split(",")
-          .map((value) => value.trim())
-          .filter(Boolean);
-        if (userIds.length === 0) {
-          throw new Error("ids must include at least one user id");
-        }
-
         const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
-        const api = new ApiClient(runtime);
-        const spinner = ora(`Sending notification to ${userIds.length} users...`).start();
-        const result = await api.post<unknown>("/users/notify", {
-          userIds,
-          title: options.title,
-          message: options.message,
-          kind: options.kind,
-          channelId: options.channel || null,
-          metadata: parseJsonOption(options.metadata),
-        });
-        spinner.succeed("Notifications sent.");
-        printJson(result);
+        const result = await sendLegacyNotificationToMany(runtime, options);
+        if (runtime.json) {
+          printJson(result);
+          return;
+        }
+        printSuccess("Notifications sent.");
       },
     );
 
@@ -334,17 +428,12 @@ export function registerUsersCommands(program: Command): void {
         command: Command,
       ) => {
         const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
-        const api = new ApiClient(runtime);
-        const spinner = ora("Sending notification to all users...").start();
-        const result = await api.post<unknown>("/users/notify-all", {
-          title: options.title,
-          message: options.message,
-          kind: options.kind,
-          channelId: options.channel || null,
-          metadata: parseJsonOption(options.metadata),
-        });
-        spinner.succeed("Notifications sent.");
-        printJson(result);
+        const result = await sendLegacyNotificationToAll(runtime, options);
+        if (runtime.json) {
+          printJson(result);
+          return;
+        }
+        printSuccess("Notifications sent.");
       },
     );
 }
@@ -363,23 +452,78 @@ function parseBooleanOption(value: string | undefined): boolean | undefined {
   throw new Error(`Invalid boolean value: ${value}`);
 }
 
-function parseJsonOption(value: string | undefined): Record<string, unknown> | null {
-  if (!value || !value.trim()) {
-    return null;
+function extractUsername(profile: Record<string, unknown>): string | null {
+  const direct = readString(profile, "username", "displayName", "name");
+  if (direct) {
+    return direct;
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new Error("--metadata must be valid JSON");
+  const nested = profile.profile;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return readString(nested as Record<string, unknown>, "username", "displayName", "name");
   }
+  return null;
+}
 
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("--metadata must be a JSON object");
+function renderDeleteWarning(profile: Record<string, unknown>): void {
+  const table = new Table({
+    head: [pc.red("Field"), pc.red("Value")],
+    wordWrap: true,
+    colWidths: [20, 48],
+  });
+
+  table.push(
+    ["User ID", readString(profile, "userId", "id") ?? "-"],
+    ["Username", extractUsername(profile) ?? "-"],
+    ["Email", readString(profile, "email") ?? "-"],
+    ["Banned", formatBoolean(readBoolean(profile, "isBanned", "banned"))],
+    ["Suspicious", formatBoolean(readBoolean(profile, "isSuspicious", "suspicious"))],
+  );
+
+  console.log(pc.red("WARNING: This action is irreversible."));
+  console.log(table.toString());
+}
+
+function readString(source: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
   }
+  return null;
+}
 
-  return parsed as Record<string, unknown>;
+function readBoolean(source: Record<string, unknown>, ...keys: string[]): boolean | null {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "boolean") {
+      return value;
+    }
+  }
+  return null;
+}
+
+function formatBoolean(value: boolean | null): string {
+  if (value === null) {
+    return "-";
+  }
+  return value ? "yes" : "no";
+}
+
+function readNumber(source: Record<string, unknown>, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number.parseFloat(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return null;
 }
 
 function normalizeTake(value: string): number {
