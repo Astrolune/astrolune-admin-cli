@@ -50,7 +50,7 @@ registerFunCommands(program);
 program.hook("preAction", (_, actionCommand) => {
   const options = actionCommand.optsWithGlobals() as { json?: boolean };
   setAuditContext({
-    command: actionCommand.commandPath(),
+    command: getCommandPath(actionCommand),
     args: process.argv.slice(2),
   });
   if (!options.json) {
@@ -138,4 +138,17 @@ function isNetworkError(error: Error): boolean {
     message.includes("socket") ||
     message.includes("getaddrinfo")
   );
+}
+
+function getCommandPath(command: Command): string {
+  const parts: string[] = [];
+  let current: Command | null = command;
+  while (current) {
+    const name = current.name();
+    if (name) {
+      parts.unshift(name);
+    }
+    current = current.parent ?? null;
+  }
+  return parts.join(" ");
 }
