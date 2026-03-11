@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import type { GlobalOptions, PersistedConfig, RuntimeContext } from "./types.js";
 
 const DEFAULT_BASE_URL = "http://localhost:5007";
+const DEFAULT_MODERATION_BASE_URL = "http://localhost:5008";
 const DEFAULT_AUTH_API_URL = "http://localhost:5001/api/auth";
 const DEFAULT_AUTH_BROWSER_URL = "http://localhost:5174/login";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -45,6 +46,12 @@ export async function createRuntimeContext(options: GlobalOptions): Promise<Runt
   const baseUrl = stripTrailingSlash(
     options.url ?? process.env.ASTROLUNE_ADMIN_URL ?? persisted.baseUrl ?? DEFAULT_BASE_URL,
   );
+  const moderationBaseUrl = stripTrailingSlash(
+    options.moderationUrl ??
+      process.env.ASTROLUNE_MODERATION_URL ??
+      persisted.moderationBaseUrl ??
+      DEFAULT_MODERATION_BASE_URL,
+  );
   const token = options.token ?? process.env.ASTROLUNE_ADMIN_TOKEN ?? persisted.token;
   const refreshToken = process.env.ASTROLUNE_ADMIN_REFRESH_TOKEN ?? persisted.refreshToken;
   const authApiUrl = stripTrailingSlash(
@@ -57,6 +64,7 @@ export async function createRuntimeContext(options: GlobalOptions): Promise<Runt
 
   return {
     baseUrl,
+    moderationBaseUrl,
     token,
     refreshToken,
     authApiUrl,

@@ -128,6 +128,14 @@ export function registerAuthCommands(program: Command): void {
     });
 
   config
+    .command("set-moderation-url <url>")
+    .description("Store moderation API base URL")
+    .action(async (url: string) => {
+      await patchConfig({ moderationBaseUrl: stripTrailingSlash(url) });
+      printSuccess("Moderation base URL updated.");
+    });
+
+  config
     .command("set-auth-url <url>")
     .description("Store auth API URL used for browser login verification")
     .action(async (url: string) => {

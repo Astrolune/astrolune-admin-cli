@@ -17,6 +17,12 @@ export function registerDoctorCommand(program: Command): void {
         printSuccess(`Base URL: ${config.baseUrl}`);
       }
 
+      if (!config.moderationBaseUrl) {
+        printWarn("Moderation base URL is not stored. Using default http://localhost:5008.");
+      } else {
+        printSuccess(`Moderation base URL: ${config.moderationBaseUrl}`);
+      }
+
       if (!config.token && !process.env.ASTROLUNE_ADMIN_TOKEN && !(command.optsWithGlobals() as GlobalOptions).token) {
         printWarn("Token is not configured. Requests requiring auth will fail.");
       } else {
@@ -25,6 +31,7 @@ export function registerDoctorCommand(program: Command): void {
 
       const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
       printInfo(`Active endpoint: ${runtime.baseUrl}`);
+      printInfo(`Moderation endpoint: ${runtime.moderationBaseUrl}`);
       printInfo(`Timeout: ${runtime.timeoutMs}ms`);
 
       const api = new ApiClient(runtime);

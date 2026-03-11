@@ -1,5 +1,6 @@
 export interface GlobalOptions {
   url?: string;
+  moderationUrl?: string;
   token?: string;
   json?: boolean;
   timeout?: string;
@@ -7,6 +8,7 @@ export interface GlobalOptions {
 
 export interface RuntimeContext {
   baseUrl: string;
+  moderationBaseUrl: string;
   token?: string;
   refreshToken?: string;
   authApiUrl?: string;
@@ -17,6 +19,7 @@ export interface RuntimeContext {
 
 export interface PersistedConfig {
   baseUrl?: string;
+  moderationBaseUrl?: string;
   token?: string;
   refreshToken?: string;
   authApiUrl?: string;
