@@ -25,6 +25,17 @@ interface LoginCommandOptions {
   open?: boolean;
 }
 
+interface RefreshCommandOptions {
+  refreshToken?: string;
+  authUrl?: string;
+  timeout?: string;
+}
+
+interface WhoAmICommandOptions {
+  authUrl?: string;
+  timeout?: string;
+}
+
 interface BrowserCallbackResult {
   accessToken: string;
   refreshToken: string;
@@ -97,6 +108,64 @@ export function registerAuthCommands(program: Command): void {
           authApiUrl,
           browserUrl,
           callbackUrl: callback.callbackUrl,
+        });
+      }
+    });
+
+  auth
+    .command("whoami")
+    .description("Show the authenticated user based on stored access token")
+    .option("--auth-url <url>", "auth API URL (default: http://localhost:5001/api/auth)")
+    .option("--timeout <ms>", "request timeout in ms")
+    .action(async (options: WhoAmICommandOptions, command: Command) => {
+      const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
+      const authApiUrl = resolveAuthApiUrl(options.authUrl, runtime.authApiUrl);
+      const timeoutMs = parseTimeoutMs(options.timeout, runtime.timeoutMs);
+
+      if (!runtime.token) {
+        throw new Error("Token not found. Run: admin auth login");
+      }
+
+      const user = await fetchAuthUser(authApiUrl, runtime.token, timeoutMs);
+      printSuccess(`Authenticated as ${user.username} (${user.email}), role=${user.platformRole}.`);
+
+      if ((command.optsWithGlobals() as GlobalOptions).json) {
+        printJson({ ok: true, user, authApiUrl });
+      }
+    });
+
+  auth
+    .command("refresh")
+    .description("Refresh access token using stored refresh token")
+    .option("--auth-url <url>", "auth API URL (default: http://localhost:5001/api/auth)")
+    .option("--refresh-token <token>", "refresh token override (default: stored refresh token)")
+    .option("--timeout <ms>", "request timeout in ms")
+    .action(async (options: RefreshCommandOptions, command: Command) => {
+      const runtime = await createRuntimeContext(command.optsWithGlobals() as GlobalOptions);
+      const authApiUrl = resolveAuthApiUrl(options.authUrl, runtime.authApiUrl);
+      const timeoutMs = parseTimeoutMs(options.timeout, runtime.timeoutMs);
+      const refreshToken = options.refreshToken ?? runtime.refreshToken;
+
+      if (!refreshToken) {
+        throw new Error("Refresh token not found. Run: admin auth login");
+      }
+
+      const refreshed = await refreshAccessToken(authApiUrl, refreshToken, timeoutMs);
+      await patchConfig({
+        token: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        authApiUrl,
+      });
+
+      printSuccess("Tokens refreshed.");
+
+      if ((command.optsWithGlobals() as GlobalOptions).json) {
+        printJson({
+          ok: true,
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken,
+          user: refreshed.user,
+          authApiUrl,
         });
       }
     });
@@ -463,6 +532,60 @@ async function fetchAuthUser(
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error(`Auth /me request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function refreshAccessToken(
+  authApiUrl: string,
+  refreshToken: string,
+  timeoutMs: number,
+): Promise<{ accessToken: string; refreshToken: string; user: AuthUserPayload }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(`${stripTrailingSlash(authApiUrl)}/refresh`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ refreshToken }),
+      signal: controller.signal,
+    });
+
+    const rawText = await response.text();
+    const payload = tryParseJson(rawText);
+
+    if (!response.ok) {
+      const reason =
+        extractString(payload, "error", "message", "title", "detail") ??
+        `HTTP ${response.status} ${response.statusText}`;
+      throw new Error(`Failed to refresh token: ${reason}`);
+    }
+
+    const accessToken =
+      extractString(payload, "accessToken", "AccessToken", "access_token", "token") ?? "";
+    const nextRefreshToken =
+      extractString(payload, "refreshToken", "RefreshToken", "refresh_token") ?? "";
+
+    if (!accessToken || !nextRefreshToken) {
+      throw new Error("Refresh response did not include access and refresh tokens.");
+    }
+
+    const user = normalizeAuthUser(payload);
+    return {
+      accessToken,
+      refreshToken: nextRefreshToken,
+      user,
+    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Auth refresh request timed out after ${timeoutMs}ms`);
     }
     throw error;
   } finally {

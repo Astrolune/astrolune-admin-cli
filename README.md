@@ -62,6 +62,8 @@ validates `/api/auth/me`, and saves token only for `admin`/`super_admin` roles.
 node dist/index.js doctor
 node dist/index.js health
 node dist/index.js auth login
+node dist/index.js auth whoami
+node dist/index.js auth refresh
 node dist/index.js users list --take 50
 node dist/index.js users id alice
 node dist/index.js users id alice --id-only
